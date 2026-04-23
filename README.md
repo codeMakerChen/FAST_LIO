@@ -273,3 +273,39 @@ The main structure of this UAV is 3d printed (Aluminum or PLA), the .stl file wi
 ## 6.Acknowledgments
 
 Thanks for LOAM(J. Zhang and S. Singh. LOAM: Lidar Odometry and Mapping in Real-time), [Livox_Mapping](https://github.com/Livox-SDK/livox_mapping), [LINS](https://github.com/ChaoqinRobotics/LINS---LiDAR-inertial-SLAM) and [Loam_Livox](https://github.com/hku-mars/loam_livox).
+
+## 4. ROS-free offline mode (new)
+
+To run FAST_LIO in a ROS-independent offline workflow, this repository now provides a standalone executable `fastlio_offline`.
+
+### 4.1 Build only offline target (no ROS dependency)
+
+```bash
+cd FAST_LIO
+cmake -S . -B build_offline -DFASTLIO_BUILD_ROS=OFF -DFASTLIO_BUILD_OFFLINE=ON
+cmake --build build_offline -j
+```
+
+### 4.2 Input format
+
+- LiDAR scans: a folder of `.pcd` files, each filename stem is timestamp in seconds, e.g. `1686032450.123.pcd`.
+- IMU data: CSV file with columns:
+  `timestamp,ax,ay,az,gx,gy,gz`
+
+### 4.3 Run
+
+```bash
+./build_offline/fastlio_offline \
+  --scan_dir /path/to/pcd_dir \
+  --imu_csv /path/to/imu.csv \
+  --output_dir /path/to/output \
+  --voxel 0.2 \
+  --min_range 1.0
+```
+
+### 4.4 Output
+
+- `output/map.pcd`: accumulated global map
+- `output/trajectory.txt`: timestamped pose `(t, p, q)`
+
+> Note: this offline pipeline is intentionally ROS-free and oriented for dataset replay. It keeps FAST_LIO repository usage available when ROS runtime is not desired.
