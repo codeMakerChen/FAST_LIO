@@ -2,7 +2,9 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
-#include <filesystem>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -15,8 +17,6 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-
-namespace fs = std::filesystem;
 
 using PointType = pcl::PointXYZI;
 using PointCloud = pcl::PointCloud<PointType>;
@@ -83,7 +83,7 @@ static std::vector<ImuSample> LoadImuCsv(const std::string& path) {
   std::string line;
   while (std::getline(ifs, line)) {
     if (line.empty()) continue;
-    if (!std::isdigit(line.front()) && line.front() != '-' && line.front() != '+') {
+    if (!std::isdigit(static_cast<unsigned char>(line.front())) && line.front() != '-' && line.front() != '+') {
       continue;
     }
 
@@ -106,19 +106,50 @@ static std::vector<ImuSample> LoadImuCsv(const std::string& path) {
   return data;
 }
 
-static std::vector<std::pair<double, fs::path>> LoadScans(const std::string& scan_dir) {
-  std::vector<std::pair<double, fs::path>> scans;
-  for (const auto& e : fs::directory_iterator(scan_dir)) {
-    if (!e.is_regular_file() || e.path().extension() != ".pcd") continue;
+static std::string JoinPath(const std::string& dir, const std::string& file) {
+  if (dir.empty()) return file;
+  if (dir.back() == '/') return dir + file;
+  return dir + "/" + file;
+}
+
+static bool HasPcdSuffix(const std::string& name) {
+  if (name.size() < 4) return false;
+  return name.substr(name.size() - 4) == ".pcd";
+}
+
+static std::string StemFromFilename(const std::string& name) {
+  const size_t dot = name.find_last_of('.');
+  if (dot == std::string::npos) return name;
+  return name.substr(0, dot);
+}
+
+static std::vector<std::pair<double, std::string>> LoadScans(const std::string& scan_dir) {
+  std::vector<std::pair<double, std::string>> scans;
+  DIR* dir = opendir(scan_dir.c_str());
+  if (!dir) {
+    throw std::runtime_error("Failed to open scan dir: " + scan_dir);
+  }
+
+  dirent* entry = nullptr;
+  while ((entry = readdir(dir)) != nullptr) {
+    const std::string name(entry->d_name);
+    if (name == "." || name == "..") continue;
+    if (!HasPcdSuffix(name)) continue;
+
+    const std::string full_path = JoinPath(scan_dir, name);
+    struct stat st;
+    if (stat(full_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
 
     try {
-      const double t = std::stod(e.path().stem().string());
-      scans.emplace_back(t, e.path());
+      const double t = std::stod(StemFromFilename(name));
+      scans.push_back(std::make_pair(t, full_path));
     } catch (...) {
-      std::cerr << "[WARN] Skip non-timestamp file: " << e.path() << std::endl;
+      std::cerr << "[WARN] Skip non-timestamp file: " << full_path << std::endl;
     }
   }
-  std::sort(scans.begin(), scans.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  closedir(dir);
+
+  std::sort(scans.begin(), scans.end(), [](const std::pair<double, std::string>& a, const std::pair<double, std::string>& b) { return a.first < b.first; });
   return scans;
 }
 
@@ -175,7 +206,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  fs::create_directories(output_dir);
+  mkdir(output_dir.c_str(), 0755);
 
   const auto imu = LoadImuCsv(imu_csv);
   const auto scans = LoadScans(scan_dir);
@@ -188,7 +219,7 @@ int main(int argc, char** argv) {
   pose.t = scans.front().first;
 
   PointCloud::Ptr global_map(new PointCloud());
-  std::ofstream traj(fs::path(output_dir) / "trajectory.txt");
+  std::ofstream traj(JoinPath(output_dir, "trajectory.txt"));
   traj << std::fixed << std::setprecision(9);
 
   size_t imu_idx = 0;
@@ -201,7 +232,7 @@ int main(int argc, char** argv) {
     pose = Integrate(pose, imu, imu_idx, t);
 
     PointCloud::Ptr scan(new PointCloud());
-    if (pcl::io::loadPCDFile<PointType>(scans[i].second.string(), *scan) != 0) {
+    if (pcl::io::loadPCDFile<PointType>(scans[i].second, *scan) != 0) {
       std::cerr << "[WARN] Failed to load scan: " << scans[i].second << std::endl;
       continue;
     }
@@ -235,9 +266,9 @@ int main(int argc, char** argv) {
     std::cout << "Processed " << (i + 1) << "/" << scans.size() << " scans. map points=" << global_map->size() << std::endl;
   }
 
-  const std::string map_path = (fs::path(output_dir) / "map.pcd").string();
+  const std::string map_path = JoinPath(output_dir, "map.pcd");
   pcl::io::savePCDFileBinary(map_path, *global_map);
   std::cout << "Saved map: " << map_path << std::endl;
-  std::cout << "Saved trajectory: " << (fs::path(output_dir) / "trajectory.txt") << std::endl;
+  std::cout << "Saved trajectory: " << JoinPath(output_dir, "trajectory.txt") << std::endl;
   return 0;
 }
